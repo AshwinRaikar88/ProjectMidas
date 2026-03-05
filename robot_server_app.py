@@ -4,21 +4,36 @@ import time
 import json
 import socket
 from xarm.wrapper import XArmAPI
+import multiprocessing
 
-# ---- Arm setup ----
-arm = XArmAPI("192.168.1.188")
-arm.connect()
-arm.motion_enable(True)
-arm.set_mode(0)
-arm.set_state(0)
-time.sleep(1)
+
+
+arm = None
+
+def setup_arm():
+    global arm
+    arm = XArmAPI("192.168.1.188")
+    arm.connect()
+    arm.motion_enable(True)
+    arm.set_mode(0)
+    arm.set_state(0)
+    time.sleep(1)
+
+
+# # ---- Arm setup ----
+# arm = XArmAPI("192.168.1.188")
+# arm.connect()
+# arm.motion_enable(True)
+# arm.set_mode(0)
+# arm.set_state(0)
+# time.sleep(1)
 
 
 def init_robot():
     # Example: move each joint by angle (degrees)
     # joints = [J1, J2, J3, J4, J5, J6]
     arm.set_servo_angle(angle=[0, 0, 0, 0, 0, 0], speed=100, wait=True)
-    # arm.set_servo_angle(angle=[100, 0, 0, 0, 0, 0], speed=50, wait=True)
+    arm.set_servo_angle(angle=[100, 0, 0, 0, 0, 0], speed=50, wait=True)
 
     # Get current Cartesian position
     pos = arm.get_position(is_radian=False)  # returns [x, y, z, roll, pitch, yaw]
@@ -358,5 +373,9 @@ with gr.Blocks(css=css, title="xArm Controller") as app:
 threading.Thread(target=start_tcp_server, daemon=True).start()
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
+
+    setup_arm()
     init_robot()
+    threading.Thread(target=start_tcp_server, daemon=True).start()
     app.launch(server_name="0.0.0.0", server_port=9080)
