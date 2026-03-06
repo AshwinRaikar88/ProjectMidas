@@ -1,6 +1,6 @@
 import socket
 import json
-import math
+import re
 import threading
 import time
 import sys
@@ -50,6 +50,10 @@ arm.set_mode(0)
 arm.set_state(0)
 time.sleep(1)
 print("xArm connected.")
+
+# Make sure vacuum is off at startup
+arm.set_vacuum_gripper(False)
+log("Vacuum gripper initialized (off)")
 
 
 # --------------------------------
@@ -111,6 +115,28 @@ def move_robot(cmd):
         return {"status": "error", "message": str(e)}
 
 
+def vacuum_on():
+    """Activate vacuum — suck / grab."""
+    try:
+        log("Vacuum: ON (grab)")
+        code = arm.set_vacuum_gripper(True)
+        return {"status": "ok", "vacuum": "on", "code": code}
+    except Exception as e:
+        log(f"Vacuum on error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def vacuum_off():
+    """Deactivate vacuum — release."""
+    try:
+        log("Vacuum: OFF (release)")
+        code = arm.set_vacuum_gripper(False)
+        return {"status": "ok", "vacuum": "off", "code": code}
+    except Exception as e:
+        log(f"Vacuum off error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 def get_status():
     try:
         _, state = arm.get_state()
@@ -129,47 +155,29 @@ def send_json(conn, payload: dict):
 
 
 def parse_frame(raw_line: bytes):
-    """
-    Parse one newline-stripped frame.
-    Returns (dict, None) on success or (None, error_string) on failure.
-
-    Handles NaN / Infinity that C# happily emits but standard JSON forbids:
-      NaN  -> rejected with a warning (not a disconnect)
-      Inf  -> same
-    """
+    """Returns (dict, None) on success or (None, error_string) on failure."""
     text = raw_line.strip().decode("utf-8", errors="replace")
     if not text:
         return None, "empty frame"
 
-    # Fast path — standard JSON
     try:
         return json.loads(text), None
     except json.JSONDecodeError:
         pass
 
-    # Slow path — replace bare NaN/Infinity tokens so we can detect them
-    import re
-    sanitized = re.sub(
-        r'\bNaN\b|\bInfinity\b|\b-Infinity\b',
-        '"__BAD__"',
-        text
-    )
+    # Handle NaN / Infinity from C# without disconnecting
+    sanitized = re.sub(r'\bNaN\b|\bInfinity\b|\b-Infinity\b', '"__BAD__"', text)
     try:
         obj = json.loads(sanitized)
-        # Check whether any value was bad
         bad_keys = [k for k, v in obj.items() if v == "__BAD__"]
         if bad_keys:
-            return None, f"NaN/Infinity in fields: {bad_keys}  (frame skipped, NOT disconnecting)"
+            return None, f"NaN/Infinity in fields: {bad_keys} (frame skipped)"
         return obj, None
     except json.JSONDecodeError as e:
         return None, f"JSON parse error: {e}  raw={text[:80]}"
 
 
 def iter_messages(conn):
-    """
-    Yields (dict_or_None, error_or_None) per newline-terminated frame.
-    Never raises — caller decides what to do with errors.
-    """
     buf = b""
     while True:
         try:
@@ -230,16 +238,26 @@ def client_handler(conn, addr):
         for msg, err in iter_messages(conn):
 
             if err:
-                # Log bad frames but DO NOT disconnect — Unity will recover
                 log(f"Skipped bad frame from {addr}: {err}")
                 continue
 
-            if msg.get("reset"):
+            # Vacuum gripper commands
+            if msg.get("gripper") == "grab":
+                result = vacuum_on()
+
+            elif msg.get("gripper") == "release":
+                result = vacuum_off()
+
+            # Motion commands
+            elif msg.get("reset"):
                 result = reset_safe_position()
+
             elif msg.get("status"):
                 result = get_status()
+
             elif all(k in msg for k in ("x", "y", "z")):
                 result = move_robot(msg)
+
             else:
                 result = {"error": "unknown command"}
 
