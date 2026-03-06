@@ -51,7 +51,6 @@ arm.set_state(0)
 time.sleep(1)
 print("xArm connected.")
 
-# Make sure vacuum is off at startup
 arm.set_vacuum_gripper(False)
 log("Vacuum gripper initialized (off)")
 
@@ -70,7 +69,7 @@ active_client_addr = None
 
 def reset_safe_position():
     try:
-        log("Reset command received")
+        log("Reset: moving to safe position")
         arm.clean_error()
         arm.clean_warn()
         arm.motion_enable(True)
@@ -79,46 +78,61 @@ def reset_safe_position():
         code = arm.set_position(
             x=250, y=0, z=150,
             roll=180, pitch=0, yaw=0,
-            speed=50, wait=True
+            speed=50, wait=True          # blocks until arm arrives
         )
-        return {"status": "ok", "code": code}
+        return {"status": "ok", "reached": True, "code": code}
     except Exception as e:
         log(f"Reset error: {e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "reached": False, "message": str(e)}
 
 
 def init_robot():
     arm.set_servo_angle(angle=[0, 0, 0, 0, 0, 0], speed=100, wait=True)
-    arm.set_servo_angle(angle=[100, 0, 0, 0, 0, 0], speed=50, wait=True)
+    arm.set_servo_angle(angle=[100, 0, 0, 0, 0, -90], speed=50, wait=True)
     arm.set_mode(0)
     arm.set_state(0)
 
 
 def move_robot(cmd):
+    """
+    Move the arm and block until it physically arrives (wait=True).
+    Reply includes "reached": true so Unity knows it can send the next point.
+    """
     try:
         x     = float(cmd["x"])
         y     = float(cmd["y"])
         z     = float(cmd["z"])
         roll  = float(cmd.get("roll",  180))
         pitch = float(cmd.get("pitch",   0))
-        yaw   = float(cmd.get("yaw",     0))
+        yaw   = float(cmd.get("yaw",     90))
         speed = float(cmd.get("speed", 100))
-        log(f"Move command: {x:.1f} {y:.1f} {z:.1f}")
+
+        log(f"Moving to: x={x:.1f} y={y:.1f} z={z:.1f}")
+
         code = arm.set_position(
             x=x, y=y, z=z,
             roll=roll, pitch=pitch, yaw=yaw,
-            speed=speed, wait=True
+            speed=speed,
+            wait=False       # <-- blocks here until the arm reaches the position
         )
-        return {"status": "ok", "code": code}
+
+        log(f"Reached:   x={x:.1f} y={y:.1f} z={z:.1f}  code={code}")
+
+        return {
+            "status":  "ok",
+            "reached": True,   # Unity watches for this field
+            "x": x, "y": y, "z": z,
+            "code": code
+        }
+
     except Exception as e:
         log(f"Move error: {e}")
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "reached": False, "message": str(e)}
 
 
 def vacuum_on():
-    """Activate vacuum — suck / grab."""
     try:
-        log("Vacuum: ON (grab)")
+        log("Vacuum: ON")
         code = arm.set_vacuum_gripper(True)
         return {"status": "ok", "vacuum": "on", "code": code}
     except Exception as e:
@@ -127,9 +141,8 @@ def vacuum_on():
 
 
 def vacuum_off():
-    """Deactivate vacuum — release."""
     try:
-        log("Vacuum: OFF (release)")
+        log("Vacuum: OFF")
         code = arm.set_vacuum_gripper(False)
         return {"status": "ok", "vacuum": "off", "code": code}
     except Exception as e:
@@ -155,17 +168,13 @@ def send_json(conn, payload: dict):
 
 
 def parse_frame(raw_line: bytes):
-    """Returns (dict, None) on success or (None, error_string) on failure."""
     text = raw_line.strip().decode("utf-8", errors="replace")
     if not text:
         return None, "empty frame"
-
     try:
         return json.loads(text), None
     except json.JSONDecodeError:
         pass
-
-    # Handle NaN / Infinity from C# without disconnecting
     sanitized = re.sub(r'\bNaN\b|\bInfinity\b|\b-Infinity\b', '"__BAD__"', text)
     try:
         obj = json.loads(sanitized)
@@ -200,9 +209,8 @@ def iter_messages(conn):
 def client_handler(conn, addr):
     global active_client_addr
 
-    conn.settimeout(30)
+    conn.settimeout(60)   # generous — arm moves can take a few seconds
 
-    # ── Duplicate guard ────────────────────────────────────────────────────
     with active_client_lock:
         if active_client_addr is not None:
             log(f"Rejected duplicate from {addr}  (active: {active_client_addr})")
@@ -218,7 +226,6 @@ def client_handler(conn, addr):
             return
         active_client_addr = addr
 
-    # ── Welcome ────────────────────────────────────────────────────────────
     log(f"Client connected: {addr}")
     try:
         send_json(conn, {
@@ -233,31 +240,22 @@ def client_handler(conn, addr):
         conn.close()
         return
 
-    # ── Command loop ───────────────────────────────────────────────────────
     with conn:
         for msg, err in iter_messages(conn):
-
             if err:
                 log(f"Skipped bad frame from {addr}: {err}")
                 continue
 
-            # Vacuum gripper commands
             if msg.get("gripper") == "grab":
                 result = vacuum_on()
-
             elif msg.get("gripper") == "release":
                 result = vacuum_off()
-
-            # Motion commands
             elif msg.get("reset"):
                 result = reset_safe_position()
-
             elif msg.get("status"):
                 result = get_status()
-
             elif all(k in msg for k in ("x", "y", "z")):
                 result = move_robot(msg)
-
             else:
                 result = {"error": "unknown command"}
 
@@ -283,7 +281,7 @@ def start_tcp_server():
             try:
                 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                server.settimeout(None)   # override any XArmAPI global timeout
+                server.settimeout(None)
                 server.bind((TCP_HOST, TCP_PORT))
                 server.listen(5)
                 log(f"TCP server listening on :{TCP_PORT}")
@@ -295,14 +293,9 @@ def start_tcp_server():
                     server = None
                 time.sleep(5)
                 continue
-
         try:
             conn, addr = server.accept()
-            threading.Thread(
-                target=client_handler,
-                args=(conn, addr),
-                daemon=True
-            ).start()
+            threading.Thread(target=client_handler, args=(conn, addr), daemon=True).start()
         except OSError as e:
             log(f"accept() error: {e} — recreating server socket")
             try: server.close()
@@ -317,11 +310,9 @@ def start_tcp_server():
 
 app = FastAPI()
 
-
 @app.get("/")
 def root():
     return {"server": "xArm Robot Server"}
-
 
 @app.get("/status")
 def http_status():
@@ -332,7 +323,6 @@ def http_status():
             if active_client_addr else None
         )
     return s
-
 
 @app.get("/log")
 def http_logs():
@@ -349,7 +339,6 @@ def main():
     threading.Thread(target=start_tcp_server, daemon=True).start()
     log("HTTP monitoring server started")
     uvicorn.run(app, host="0.0.0.0", port=HTTP_PORT, log_config=None)
-
 
 if __name__ == "__main__":
     main()
