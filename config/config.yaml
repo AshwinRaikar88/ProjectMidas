@@ -1,0 +1,25 @@
+robot:
+  arm_ip: "192.168.1.188"
+
+network:
+  tcp_host: "0.0.0.0"
+  tcp_port: 5005
+  http_port: 8000
+
+csharp_app:
+  exe_path: "C:/Users/Developers/Documents/ashwin/Haply 3.0/Builds/Windows 11/GLOWY.exe"
+  args: []
+  auto_restart: true
+
+robot_defaults:
+  safe_position:
+    x: 250
+    y: 0
+    z: 150
+    roll: 180
+    pitch: 0
+    yaw: 0
+    speed: 50
+
+logging:
+  max_lines: 200
