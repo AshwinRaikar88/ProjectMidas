@@ -214,9 +214,9 @@ def monitor_csharp_process(proc):
 
         if AUTO_RESTART_CSHARP:
 
-            log("Restarting C# app in 5 seconds...")
+            log("Restarting C# app in 15 seconds...")
 
-            time.sleep(5)
+            time.sleep(15)
 
             launch_csharp_app()
 
@@ -287,8 +287,8 @@ def reset_safe_position():
 def init_robot():
 
     arm.set_servo_angle(angle=[0, 0, 0, 0, 0, 0], speed=100, wait=True)
-
     arm.set_servo_angle(angle=[100, 0, 0, 0, 0, -90], speed=50, wait=True)
+    arm.set_servo_angle(angle=[95, 15, 21, 0, 4, -5], speed=50, wait=True)
 
     arm.set_mode(0)
     arm.set_state(0)
@@ -371,6 +371,22 @@ def vacuum_off():
 
         return {"status": "error", "message": str(e)}
 
+
+def terminate_server():
+    """
+    Terminates the Python server process gracefully.
+    """
+    log("Received terminate command. Exiting Python server...")
+    # Optionally stop C# app if running
+    stop_csharp_app()
+    reset_safe_position()
+
+    # Give logs a moment to flush
+    time.sleep(0.5)
+
+    # Exit process
+    os._exit(0)  # Force exit immediately
+    # or: sys.exit(0)  # Graceful exit (might hang if threads block)
 
 def get_status():
 
@@ -493,6 +509,13 @@ def client_handler(conn, addr):
 
             elif msg.get("status"):
                 result = get_status()
+
+            elif msg.get("terminate_server"):
+                print("Received terminate command from client")
+                result = {"status": "ok", "message": "Python server terminating"}
+                send_json(conn, result)
+                terminate_server()  # immediately terminates server
+                return
 
             elif all(k in msg for k in ("x", "y", "z")):
                 result = move_robot(msg)

@@ -34,6 +34,7 @@ def init_robot():
     # joints = [J1, J2, J3, J4, J5, J6]
     arm.set_servo_angle(angle=[0, 0, 0, 0, 0, 0], speed=100, wait=True)
     arm.set_servo_angle(angle=[100, 0, 0, 0, 0, 0], speed=50, wait=True)
+    arm.set_servo_angle(angle=[95, 15, 21, 0, 4, -5], speed=50, wait=True)
 
     # Get current Cartesian position
     pos = arm.get_position(is_radian=False)  # returns [x, y, z, roll, pitch, yaw]
